@@ -1,0 +1,164 @@
+# Deployment pipeline: dev on every push to main, production behind approval.
+#
+# ---------------------------------------------------------------------------
+# BEFORE THIS WORKFLOW CAN RUN — one-time AWS setup
+# ---------------------------------------------------------------------------
+# There are NO long-lived AWS access keys in this repository, and there should
+# never be. Instead GitHub authenticates to AWS with OpenID Connect (OIDC):
+# GitHub signs a short-lived token describing the repo, branch and environment,
+# and AWS trades it for temporary credentials. Nothing to rotate, nothing to
+# leak.
+#
+# Set it up once per AWS account:
+#
+#   1. Create the OIDC identity provider (only needed once per account):
+#        aws iam create-open-id-connect-provider \
+#          --url https://token.actions.githubusercontent.com \
+#          --client-id-list sts.amazonaws.com
+#
+#   2. Create a deployment role whose trust policy restricts which repository
+#      and which branch may assume it, e.g.:
+#        "Condition": {
+#          "StringEquals": {
+#            "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+#          },
+#          "StringLike": {
+#            "token.actions.githubusercontent.com:sub":
+#              "repo:<owner>/<repo>:ref:refs/heads/main"
+#          }
+#        }
+#      Without that StringLike condition ANY GitHub repository could assume
+#      your role — it is the single most important line in the setup.
+#
+#   3. Store the role ARN as a repository variable named AWS_DEPLOY_ROLE_ARN
+#      and the region as AWS_REGION.
+#
+#   4. Bootstrap CDK once per account+region:
+#        cdk bootstrap aws://<account-id>/<region>
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Which environment to deploy
+        required: true
+        default: dev
+        type: choice
+        options: [dev, prod]
+
+# Never run two deployments against the same environment at once: concurrent
+# CloudFormation updates to one stack fail, and can leave it mid-update.
+concurrency:
+  group: deploy-${{ github.event.inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # REQUIRED: lets the job request the OIDC token
+
+jobs:
+  # -------------------------------------------------------------------------
+  # 1. Re-run the CI checks. Never deploy something that was not just verified.
+  # -------------------------------------------------------------------------
+  verify:
+    name: Verify
+    uses: ./.github/workflows/ci.yml
+
+  # -------------------------------------------------------------------------
+  # 2. Deploy.
+  # -------------------------------------------------------------------------
+  deploy:
+    name: Deploy ${{ github.event.inputs.environment || 'dev' }}
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    # GitHub Environments give you the approval gate: configure "prod" with
+    # required reviewers in Settings -> Environments and this job will pause
+    # until a human approves it.
+    environment:
+      name: ${{ github.event.inputs.environment || 'dev' }}
+      url: ${{ steps.outputs.outputs.application_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          npm install --no-fund --no-audit
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: github-actions-cdk-deploy
+
+      # A diff in the log is the reviewable record of what this run changed.
+      # `|| true` because `cdk diff` exits non-zero when differences exist,
+      # which is the normal case here rather than an error.
+      - name: Show infrastructure diff
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+        run: npx cdk diff -c env=$ENVIRONMENT || true
+
+      - name: Deploy
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+          CERTIFICATE_ARN: ${{ vars.CERTIFICATE_ARN }}
+        run: |
+          # Pass the ACM certificate ARN when one is configured, so the stack
+          # serves HTTPS and redirects port 80 to it.
+          EXTRA_ARGS=""
+          if [ -n "$CERTIFICATE_ARN" ]; then
+            EXTRA_ARGS="-c certificate_arn=$CERTIFICATE_ARN"
+          fi
+
+          npx cdk deploy \
+            -c env="$ENVIRONMENT" $EXTRA_ARGS \
+            --require-approval never \
+            --outputs-file cdk-outputs.json \
+            --progress events
+
+      - name: Read stack outputs
+        id: outputs
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+        run: |
+          STACK="WebAppStack-$ENVIRONMENT"
+          URL=$(python -c "import json,os,sys; d=json.load(open('cdk-outputs.json')); print(d[os.environ['STACK']]['ApplicationUrl'])" 2>/dev/null || echo "")
+          echo "application_url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Deployed: $URL"
+
+      # A deployment that CloudFormation calls "successful" can still serve
+      # errors, so confirm the application actually answers.
+      - name: Smoke test
+        if: steps.outputs.outputs.application_url != ''
+        run: |
+          URL="${{ steps.outputs.outputs.application_url }}"
+          for attempt in $(seq 1 20); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$URL" || echo 000)
+            echo "attempt $attempt: HTTP $CODE"
+            if [ "$CODE" = "200" ]; then
+              echo "Smoke test passed."
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "Application did not return HTTP 200 within ~5 minutes."
+          exit 1

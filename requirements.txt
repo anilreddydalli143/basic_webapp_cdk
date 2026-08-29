@@ -1,0 +1,8 @@
+# Runtime dependencies needed to synthesize / deploy the stack.
+#
+# Why the upper bounds?
+#   aws-cdk-lib 3.x will contain breaking changes, and `constructs` 11.x is not
+#   compatible with CDK v2. Pinning the major version keeps builds reproducible
+#   so a future release cannot silently break the pipeline.
+aws-cdk-lib>=2.150.0,<3.0.0
+constructs>=10.0.0,<11.0.0

@@ -1,0 +1,16 @@
+{
+  "name": "basic-webapp-cdk",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pins the AWS CDK CLI. The infrastructure itself is written in Python (see basic_webapp/); the CDK CLI just happens to be a Node.js program.",
+  "scripts": {
+    "synth": "cdk synth",
+    "diff": "cdk diff",
+    "deploy": "cdk deploy",
+    "destroy": "cdk destroy",
+    "nag": "cdk synth -c nag=true --quiet"
+  },
+  "devDependencies": {
+    "aws-cdk": "^2.1139.0"
+  }
+}

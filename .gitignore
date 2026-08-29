@@ -1,0 +1,34 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- AWS CDK ---
+# cdk.out holds the *synthesized* CloudFormation templates. It is generated
+# output, so it must never be committed.
+cdk.out/
+cdk.context.json
+*.d.ts
+*.js
+
+# --- Node.js (the CDK CLI is installed here as a dev dependency) ---
+node_modules/
+
+# --- Deployment artefacts ---
+cdk-outputs.json
+
+# --- Local / editor / OS ---
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+.DS_Store

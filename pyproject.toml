@@ -1,0 +1,47 @@
+# Tooling configuration. Keeping it in one file (rather than .flake8 +
+# setup.cfg + pytest.ini) means there is a single place to look.
+
+[tool.ruff]
+# Match the oldest Python this project supports, so ruff does not suggest
+# syntax that would break there.
+target-version = "py39"
+line-length = 88
+exclude = [".venv", "cdk.out", "node_modules", "__pycache__"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes: undefined names, unused imports
+    "I",   # isort: import ordering
+    "B",   # flake8-bugbear: likely bugs
+    "UP",  # pyupgrade: modernise syntax
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501", # line length is enforced by the formatter, not the linter
+    "B008", # CDK constructs legitimately take construct calls as arguments
+]
+
+[tool.ruff.lint.isort]
+# Keep the idiomatic CDK import style, where the module aliases sit in one
+# grouped `from aws_cdk import (...)` block rather than being split into a
+# separate statement per alias.
+combine-as-imports = true
+
+[tool.ruff.lint.per-file-ignores]
+# Tests reach into a private validation helper on purpose; that is the point of
+# testing the validation.
+"tests/*" = ["S101"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+# Show the reason a test was skipped, and treat unregistered marks as errors so
+# a typo in @pytest.mark.* cannot silently disable a test.
+addopts = "-ra --strict-markers"
+filterwarnings = [
+    # jsii (the CDK Python bridge) emits deprecation warnings from its own
+    # internals that application code cannot act on.
+    "ignore::DeprecationWarning:jsii",
+]
